@@ -1,47 +1,59 @@
-import { AgentMessage, IncidentContext } from '../types';
-import { callQwen } from '../qwenClient';
+import { AgentMessage, IncidentContext, TokenUsage } from '../types';
+import { callQwen, extractJson, accumulateUsage } from '../qwenClient';
 
 const SYSTEM_PROMPT = `Tu es L'Analyste, expert en analyse de cause racine (RCA) de SentinelOps Society.
-Sur la base de l'investigation fournie, tu dois:
+Sur la base de l'investigation outillee fournie (logs, metriques, deploiements), tu dois:
 1. Identifier la cause racine probable avec precision
-2. Attribuer un score de confiance de 0 a 100
+2. Attribuer un score de confiance de 0 a 100, calibre honnetement:
+   - >85 seulement si plusieurs sources d'evidence convergent (ex: correlation deploiement + logs + metriques)
+   - <60 si l'evidence est circonstancielle
 3. Lister les causes secondaires possibles
-4. Proposer des hypotheses alternatives
-Reponds en JSON avec les champs:
-- rootCause: string (cause racine principale)
-- confidence: number (0-100)
-- secondaryCauses: string[]
-- alternatives: string[]
-- summary: string (resume en une phrase pour le DSI)`;
+4. Proposer des hypotheses alternatives et expliquer pourquoi tu les ecartes
+Reponds UNIQUEMENT en JSON avec les champs:
+{ "rootCause": string, "confidence": number, "secondaryCauses": [string],
+  "alternatives": [string], "summary": string }`;
+
+export interface AnalysteResult {
+  rootCause: string;
+  confidence: number;
+  alternatives: string[];
+}
 
 export async function runAnalyste(
   context: IncidentContext,
-  timeline: AgentMessage[]
-): Promise<{ rootCause: string; confidence: number }> {
+  timeline: AgentMessage[],
+  usage: TokenUsage
+): Promise<AnalysteResult> {
   console.log('[Orchestrator] Running L\'Analyste...');
 
-  const userPrompt = `Investigation: ${context.investigation}\nAlerte: ${context.alert.message}\nService: ${context.alert.service}`;
+  const toolSummary = context.toolInvocations
+    .map((inv) => `- ${inv.tool}(${JSON.stringify(inv.args)}) => ${inv.result.slice(0, 400)}`)
+    .join('\n');
+
+  const userPrompt = `INVESTIGATION:\n${context.investigation}\n\nDONNEES BRUTES DES OUTILS:\n${toolSummary}\n\nALERTE: ${context.alert.message}\nSERVICE: ${context.alert.service}`;
 
   timeline.push({
     agent: 'L\'Analyste',
     role: 'user',
-    content: 'Analyse de cause racine en cours...',
+    content: `Analyse de cause racine sur la base de ${context.toolInvocations.length} appels d'outils d'observabilite...`,
     timestamp: new Date().toISOString(),
   });
 
-  const result = await callQwen(SYSTEM_PROMPT, userPrompt);
+  const response = await callQwen('analyste', SYSTEM_PROMPT, userPrompt);
+  accumulateUsage(usage, response.usage);
 
-  let rootCause = 'Cause racine indeterminee';
-  let confidence = 50;
+  const parsed = extractJson<{
+    rootCause?: string;
+    confidence?: number;
+    alternatives?: string[];
+  }>(response.content, {});
 
-  try {
-    const cleaned = result.replace(/```json\n?|```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    rootCause = parsed.rootCause || rootCause;
-    confidence = typeof parsed.confidence === 'number' ? parsed.confidence : confidence;
-  } catch {
-    rootCause = result.substring(0, 200);
-  }
+  const rootCause = parsed.rootCause || response.content.slice(0, 200) || 'Cause racine indeterminee';
+  const confidence =
+    typeof parsed.confidence === 'number' && parsed.confidence >= 0 && parsed.confidence <= 100
+      ? Math.round(parsed.confidence)
+      : 50;
+  const alternatives = Array.isArray(parsed.alternatives) ? parsed.alternatives.map(String) : [];
 
   timeline.push({
     agent: 'L\'Analyste',
@@ -50,5 +62,5 @@ export async function runAnalyste(
     timestamp: new Date().toISOString(),
   });
 
-  return { rootCause, confidence };
+  return { rootCause, confidence, alternatives };
 }

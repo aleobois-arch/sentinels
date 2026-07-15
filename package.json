@@ -1,0 +1,37 @@
+{
+  "name": "sentinelops-society",
+  "version": "2.0.0",
+  "description": "SentinelOps Society — autonomous, serverless incident-response autopilot for European enterprises. Powered by Qwen Cloud + Alibaba Cloud Function Compute. Track 4: Autopilot Agent.",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "demo": "cross-env MOCK_QWEN=1 ts-node src/server.ts"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "incident-response",
+    "sre",
+    "aiops",
+    "qwen",
+    "alibaba-cloud",
+    "nis2",
+    "human-in-the-loop"
+  ],
+  "author": "Christophe Messana",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "express": "^4.19.2",
+    "openai": "^4.52.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.0.0",
+    "cross-env": "^7.0.3",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,13 +1,17 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
-import { runOrchestrator } from './orchestrator';
-import { Alert } from './types';
+import 'dotenv/config';
+import { startIncidentPipeline, approveIncident, rejectIncident, summarize } from './orchestrator';
+import { getIncident, listIncidents, subscribe } from './store';
+import { Alert, RawAlertInput } from './types';
+import { isMockMode } from './qwenClient';
 
 const app = express();
-const PORT = process.env.PORT || 9000;
+// Alibaba Cloud Function Compute custom runtime routes traffic to port 9000.
+const PORT = Number(process.env.PORT) || 9000;
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // CORS
@@ -25,49 +29,143 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Routes
-app.get('/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'SentinelOps-Society', version: '1.0.0' });
+// ---------------------------------------------------------------------------
+// Health & dashboard
+// ---------------------------------------------------------------------------
+
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'SentinelOps-Society',
+    version: '2.0.0',
+    mode: isMockMode() ? 'mock' : 'live',
+    model: process.env.QWEN_MODEL || 'qwen-plus',
+  });
 });
 
-app.get('/', (req: Request, res: Response) => {
+app.get('/', (_req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
-app.post('/incident', async (req: Request, res: Response) => {
-  try {
-    const { alert } = req.body as { alert: Alert };
-    if (!alert || !alert.message || !alert.service) {
-      res.status(400).json({ error: 'Champs requis: alert.message, alert.service' });
-      return;
-    }
-    const alertWithDefaults: Alert = {
+// ---------------------------------------------------------------------------
+// Incident ingestion — accepts BOTH structured alerts and raw ambiguous text
+// (monitoring email, Slack message, webhook payload...)
+// ---------------------------------------------------------------------------
+
+app.post('/incident', (req: Request, res: Response) => {
+  const { alert, rawText, source } = req.body as { alert?: Partial<Alert>; rawText?: string; source?: string };
+
+  let input: Alert | RawAlertInput;
+  if (rawText && String(rawText).trim()) {
+    input = { rawText: String(rawText), source };
+  } else if (alert && alert.message && alert.service) {
+    input = {
       id: alert.id || `ALT-${Date.now()}`,
       service: alert.service,
       message: alert.message,
       timestamp: alert.timestamp || new Date().toISOString(),
       severity: alert.severity || 'P2',
+      source: alert.source || 'api',
     };
-    console.log(`[Server] Processing incident for service: ${alertWithDefaults.service}`);
-    const result = await runOrchestrator(alertWithDefaults);
-    res.json(result);
+  } else {
+    res.status(400).json({
+      error: 'Fournir soit { "rawText": "..." } (alerte non structuree), soit { "alert": { "service", "message", ... } }.',
+    });
+    return;
+  }
+
+  // Fire-and-observe: the record (and its id) is created synchronously; the
+  // pipeline runs in the background. Clients follow it live via SSE
+  // (/incident/:id/events) or by polling GET /incident/:id.
+  const record = startIncidentPipeline(input);
+  res.status(202).json({
+    incidentId: record.incidentId,
+    status: record.status,
+    streamUrl: `/incident/${record.incidentId}/events`,
+    detailUrl: `/incident/${record.incidentId}`,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Incident queries
+// ---------------------------------------------------------------------------
+
+app.get('/incidents', (_req: Request, res: Response) => {
+  res.json(listIncidents().map(summarize));
+});
+
+app.get('/incident/:id', (req: Request, res: Response) => {
+  const record = getIncident(req.params.id);
+  if (!record) { res.status(404).json({ error: `Incident inconnu: ${req.params.id}` }); return; }
+  res.json(record);
+});
+
+// ---------------------------------------------------------------------------
+// Live event stream (SSE) — replay past timeline, then stream new events
+// ---------------------------------------------------------------------------
+
+app.get('/incident/:id/events', (req: Request, res: Response) => {
+  const record = getIncident(req.params.id);
+  if (!record) { res.status(404).json({ error: `Incident inconnu: ${req.params.id}` }); return; }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (type: string, data: unknown) => {
+    res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+  };
+
+  // Replay history so late subscribers see the full timeline.
+  for (const entry of record.context.timeline) send('timeline', entry);
+  send('status', record.status);
+  if (['resolved', 'rejected', 'pending_approval', 'failed'].includes(record.status)) {
+    send('done', summarize(record));
+  }
+
+  const unsubscribe = subscribe(req.params.id, (event) => send(event.type, event.data));
+  const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 15000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Human-in-the-loop checkpoint — DSI/RSSI decision endpoints
+// ---------------------------------------------------------------------------
+
+app.post('/incident/:id/approve', async (req: Request, res: Response) => {
+  try {
+    const approver = String(req.body?.approver || 'DSI');
+    const record = await approveIncident(req.params.id, approver);
+    res.json({ message: 'Remediation approuvee et executee.', ...summarize(record), report: record.context.postIncidentReport });
   } catch (error: any) {
-    console.error('[Server] Error processing incident:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(409).json({ error: error.message });
   }
 });
 
-// Alibaba Cloud Function Compute handler
-module.exports.handler = (req: any, resp: any, context: any) => {
-  app(req, resp);
-};
+app.post('/incident/:id/reject', async (req: Request, res: Response) => {
+  try {
+    const approver = String(req.body?.approver || 'DSI');
+    const reason = String(req.body?.reason || '');
+    const record = await rejectIncident(req.params.id, approver, reason);
+    res.json({ message: 'Remediation refusee. Rapport genere.', ...summarize(record), report: record.context.postIncidentReport });
+  } catch (error: any) {
+    res.status(409).json({ error: error.message });
+  }
+});
 
-// Local dev server
-if (process.env.NODE_ENV !== 'fc') {
-  app.listen(PORT, () => {
-    console.log(`[Server] SentinelOps Society running on port ${PORT}`);
-    console.log(`[Server] Dashboard: http://localhost:${PORT}`);
-  });
-}
+// ---------------------------------------------------------------------------
+// Server initialization — Alibaba Cloud Function Compute (custom runtime)
+// simply runs this process and routes HTTP traffic to PORT (9000).
+// ---------------------------------------------------------------------------
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[Server] SentinelOps Society v2 running on port ${PORT} (${isMockMode() ? 'MOCK' : 'LIVE'} mode)`);
+  console.log(`[Server] Dashboard: http://localhost:${PORT}`);
+});
 
 export default app;

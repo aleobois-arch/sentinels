@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SentinelOps Society — Autopilot Incident Response</title>
+  <style>
+    :root {
+      --bg: #0a0f1e; --surface: rgba(23, 32, 55, 0.75); --border: rgba(255,255,255,0.08);
+      --text: #eef2ff; --muted: #8b96b5; --primary: #6366f1; --accent: #22d3ee;
+      --ok: #10b981; --warn: #f59e0b; --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif; background:
+        radial-gradient(1200px 600px at 80% -10%, rgba(99,102,241,0.18), transparent),
+        radial-gradient(900px 500px at -10% 30%, rgba(34,211,238,0.10), transparent),
+        var(--bg);
+      color: var(--text); margin: 0; padding: 2rem; line-height: 1.6;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; }
+    header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.25rem; }
+    h1 { font-size: 2.2rem; margin: 0;
+      background: linear-gradient(to right, #818cf8, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .sub { color: var(--muted); margin-bottom: 1.5rem; }
+    .badge { font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+      padding: .25rem .6rem; border-radius: 999px; border: 1px solid var(--border); color: var(--accent); }
+    .panel { background: var(--surface); backdrop-filter: blur(12px); border: 1px solid var(--border);
+      border-radius: 14px; padding: 1.4rem; margin-bottom: 1.4rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 .9rem; color: #c7d2fe; text-transform: uppercase; letter-spacing: .08em; }
+    textarea, input, select { width: 100%; background: rgba(0,0,0,0.35); color: #a5f3fc; border: 1px solid var(--border);
+      border-radius: 8px; padding: .8rem; font-family: ui-monospace, monospace; font-size: .9rem; }
+    textarea { height: 110px; resize: vertical; }
+    .row { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: .8rem; align-items: center; }
+    button { background: var(--primary); color: white; border: none; padding: .7rem 1.6rem; font-weight: 700;
+      border-radius: 8px; cursor: pointer; transition: transform .15s, background .15s; font-size: .92rem; }
+    button:hover { transform: translateY(-1px); }
+    button:disabled { background: #374151; cursor: not-allowed; transform: none; }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+    button.ok { background: var(--ok); } button.danger { background: var(--danger); }
+    .samples { display: flex; gap: .6rem; flex-wrap: wrap; }
+    /* Agent pipeline */
+    .pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .7rem; }
+    .step { background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 10px; padding: .7rem .9rem; position: relative; transition: border-color .3s; }
+    .step .num { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem;
+      border-radius: 50%; background: rgba(99,102,241,.25); color: #a5b4fc; font-weight: 700; font-size: .8rem; margin-bottom: .35rem; }
+    .step .name { font-weight: 700; font-size: .9rem; }
+    .step .role { color: var(--muted); font-size: .74rem; }
+    .step.active { border-color: var(--accent); box-shadow: 0 0 18px rgba(34,211,238,.18); }
+    .step.active .num { background: var(--accent); color: #06222a; }
+    .step.done { border-color: var(--ok); }
+    .step.done .num { background: var(--ok); color: white; }
+    /* Timeline */
+    .tl-item { border-left: 3px solid var(--primary); padding: 0 0 .1rem 1.2rem; margin-bottom: 1.1rem; position: relative; }
+    .tl-item::before { content: ''; position: absolute; left: -7px; top: .3rem; width: 11px; height: 11px; background: var(--primary); border-radius: 50%; }
+    .tl-item.tool { border-color: var(--accent); } .tl-item.tool::before { background: var(--accent); }
+    .tl-item.human { border-color: var(--warn); } .tl-item.human::before { background: var(--warn); }
+    .agent-badge { display: inline-block; background: rgba(99,102,241,.2); color: #a5b4fc; padding: .15rem .55rem;
+      border-radius: 5px; font-size: .8rem; font-weight: 700; }
+    .tl-item.tool .agent-badge { background: rgba(34,211,238,.15); color: #67e8f9; }
+    .tl-item.human .agent-badge { background: rgba(245,158,11,.18); color: #fcd34d; }
+    .ts { color: var(--muted); font-size: .74rem; margin-left: .5rem; }
+    .tl-content { margin-top: .3rem; font-size: .88rem; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
+    /* Status + metrics */
+    .status-pill { display: inline-block; padding: .3rem .9rem; border-radius: 999px; font-weight: 700; font-size: .85rem; }
+    .st-running { background: rgba(99,102,241,.2); color: #a5b4fc; }
+    .st-pending_approval { background: rgba(245,158,11,.2); color: #fcd34d; }
+    .st-executing { background: rgba(34,211,238,.18); color: #67e8f9; }
+    .st-resolved { background: rgba(16,185,129,.2); color: #6ee7b7; }
+    .st-rejected, .st-failed { background: rgba(239,68,68,.2); color: #fca5a5; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .7rem; }
+    .metric { background: rgba(0,0,0,.25); border: 1px solid var(--border); border-radius: 10px; padding: .7rem .9rem; }
+    .metric .v { font-size: 1.3rem; font-weight: 800; color: var(--accent); }
+    .metric .k { color: var(--muted); font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; }
+    /* Approval */
+    #approvalPanel { border: 1px solid rgba(245,158,11,.4); background: rgba(245,158,11,.06); display: none; }
+    #approvalPanel .why { color: #fcd34d; font-size: .9rem; margin-bottom: .8rem; }
+    pre.report { background: rgba(0,0,0,.45); padding: 1.3rem; border-radius: 10px; overflow-x: auto;
+      border: 1px solid var(--border); white-space: pre-wrap; font-size: .86rem; color: #dbeafe; }
+    .hide { display: none; }
+    #loading { color: var(--accent); font-weight: 700; animation: pulse 1.6s infinite; }
+    @keyframes pulse { 50% { opacity: .45; } }
+    .conf-bar { height: 8px; background: rgba(255,255,255,.08); border-radius: 999px; overflow: hidden; margin-top: .3rem; }
+    .conf-bar > div { height: 100%; background: linear-gradient(to right, #f59e0b, #10b981); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🛰️ SentinelOps Society</h1>
+    <span class="badge">Track 4 · Autopilot Agent</span>
+    <span class="badge" id="modeBadge">…</span>
+  </header>
+  <p class="sub">Réponse aux incidents de production, de l'alerte brute au rapport NIS2 — 5 agents Qwen, outils d'observabilité, checkpoint humain. Hébergé sur Alibaba Cloud Function Compute.</p>
+
+  <div class="panel">
+    <h2>1 · Déclarer un incident</h2>
+    <textarea id="alertInput" placeholder="Collez ici une alerte : email de monitoring, message Slack, payload webhook, ou texte libre…"></textarea>
+    <div class="row">
+      <button id="runBtn">🚨 Déclencher la société d'agents</button>
+      <span id="loading" class="hide">Pipeline en cours…</span>
+      <span id="statusPill" class="status-pill hide"></span>
+    </div>
+    <div class="row samples">
+      <button class="ghost" data-sample="[CloudMonitor] ALERTE api-paiements : taux d'erreur HTTP 5xx à 41% depuis 12:02 UTC, latence p99 8.4s, timeouts 'connection pool exhausted' en explosion dans les logs. Déploiement v2.14.3 passé il y a 14 minutes.">Exemple : alerte structurée (pool DB)</button>
+      <button class="ghost" data-sample="salut l'équipe, on a plein de clients qui râlent que le paiement plante depuis ~10 min, ça timeout dans tous les sens sur le checkout, quelqu'un peut regarder ?? c'est peut-être lié au déploiement de tout à l'heure">Exemple : message Slack ambigu</button>
+      <button class="ghost" data-sample="Le service de recommandations répond en 3s au lieu de 400ms depuis ce matin, trafic +38% suite à la campagne marketing. Pas d'erreurs, juste lent.">Exemple : latence P3 (candidat auto-remédiation)</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>2 · Pipeline des agents</h2>
+    <div class="pipeline">
+      <div class="step" id="step-sentinelle"><span class="num">1</span><div class="name">Le Sentinelle</div><div class="role">Normalisation & sévérité</div></div>
+      <div class="step" id="step-inspecteur"><span class="num">2</span><div class="name">L'Inspecteur</div><div class="role">Investigation outillée</div></div>
+      <div class="step" id="step-analyste"><span class="num">3</span><div class="name">L'Analyste</div><div class="role">Cause racine (RCA)</div></div>
+      <div class="step" id="step-operateur"><span class="num">4</span><div class="name">L'Opérateur</div><div class="role">Plan & actions</div></div>
+      <div class="step" id="step-policy"><span class="num">⚖</span><div class="name">Politique</div><div class="role">Auto vs HITL</div></div>
+      <div class="step" id="step-rapporteur"><span class="num">5</span><div class="name">Le Rapporteur</div><div class="role">Rapport NIS2</div></div>
+    </div>
+  </div>
+
+  <div class="panel" id="approvalPanel">
+    <h2>⏸ Checkpoint humain — approbation requise</h2>
+    <div class="why" id="approvalReason"></div>
+    <div id="planPreview" style="font-size:.88rem; white-space:pre-wrap; margin-bottom:.9rem;"></div>
+    <div class="row">
+      <input id="approverName" placeholder="Votre nom / rôle (ex: A. Martin, DSI)" style="max-width: 320px;">
+      <button class="ok" id="approveBtn">✔ Approuver & exécuter</button>
+      <button class="danger" id="rejectBtn">✖ Refuser</button>
+    </div>
+  </div>
+
+  <div class="panel hide" id="timelinePanel">
+    <h2>3 · Timeline temps réel</h2>
+    <div id="timelineBox"></div>
+  </div>
+
+  <div class="panel hide" id="diagPanel">
+    <h2>4 · Diagnostic</h2>
+    <div id="diagBox" style="font-size:.92rem;"></div>
+  </div>
+
+  <div class="panel hide" id="reportPanel">
+    <h2>5 · Rapport post-incident (NIS2 / ANSSI)</h2>
+    <pre class="report" id="reportBox"></pre>
+  </div>
+
+  <div class="panel hide" id="metricsPanel">
+    <h2>Métriques d'exécution</h2>
+    <div class="metrics" id="metricsBox"></div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const AGENT_STEPS = {
+    'Le Sentinelle': 'step-sentinelle',
+    "L'Inspecteur": 'step-inspecteur',
+    "L'Analyste": 'step-analyste',
+    "L'Operateur": 'step-operateur',
+    'Moteur de Politique': 'step-policy',
+    'Le Rapporteur': 'step-rapporteur',
+  };
+  let currentIncidentId = null;
+  let eventSource = null;
+
+  fetch('/health').then(r => r.json()).then(h => {
+    $('modeBadge').textContent = h.mode === 'mock' ? 'Mode démo (mock)' : 'Live · ' + h.model;
+  }).catch(() => { $('modeBadge').textContent = 'hors ligne'; });
+
+  document.querySelectorAll('[data-sample]').forEach(btn =>
+    btn.addEventListener('click', () => { $('alertInput').value = btn.dataset.sample; }));
+
+  function setStatus(status) {
+    const pill = $('statusPill');
+    pill.classList.remove('hide');
+    pill.className = 'status-pill st-' + status;
+    pill.textContent = {
+      running: '⚙ Analyse en cours', pending_approval: '⏸ Attente approbation humaine',
+      executing: '▶ Exécution de la remédiation', resolved: '✔ Résolu',
+      rejected: '✖ Remédiation refusée', failed: '⚠ Échec',
+    }[status] || status;
+    $('loading').classList.toggle('hide', status !== 'running' && status !== 'executing');
+  }
+
+  function markStep(agent, state) {
+    const id = AGENT_STEPS[agent];
+    if (!id) return;
+    document.querySelectorAll('.step.active').forEach(s => s.classList.remove('active'));
+    $(id).classList.add(state);
+  }
+
+  function addTimelineEntry(entry) {
+    const div = document.createElement('div');
+    div.className = 'tl-item' + (entry.role === 'tool' ? ' tool' : '') + (entry.agent.includes('Humain') ? ' human' : '');
+    const badge = document.createElement('span');
+    badge.className = 'agent-badge'; badge.textContent = entry.agent;
+    const ts = document.createElement('span');
+    ts.className = 'ts'; ts.textContent = new Date(entry.timestamp).toLocaleTimeString();
+    const content = document.createElement('div');
+    content.className = 'tl-content'; content.textContent = entry.content;
+    div.append(badge, ts, content);
+    $('timelineBox').appendChild(div);
+    markStep(entry.agent, entry.role === 'assistant' ? 'done' : 'active');
+    $('timelinePanel').classList.remove('hide');
+    div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  async function refreshDetail() {
+    if (!currentIncidentId) return;
+    const record = await (await fetch('/incident/' + currentIncidentId)).json();
+    const c = record.context;
+    if (c.rootCause) {
+      $('diagPanel').classList.remove('hide');
+      $('diagBox').innerHTML =
+        '<b>Service :</b> ' + c.alert.service + ' — <b>Sévérité :</b> ' + c.alert.severity +
+        '<br><b>Cause racine :</b> ' + c.rootCause +
+        '<br><b>Confiance :</b> ' + c.confidence + '%<div class="conf-bar"><div style="width:' + c.confidence + '%"></div></div>' +
+        '<br><b>Risque remédiation :</b> ' + c.remediationRisk + ' · <b>Décision politique :</b> ' + c.approvalLevel;
+    }
+    if (record.status === 'pending_approval') {
+      $('approvalPanel').style.display = 'block';
+      $('approvalReason').textContent = c.approvalReason;
+      $('planPreview').textContent = 'PLAN PROPOSÉ :\n' + c.remediationPlan +
+        '\n\nACTIONS : ' + (c.actions.map(a => a.tool + '(' + JSON.stringify(a.args) + ')').join(' · ') || 'aucune') +
+        '\n\nROLLBACK : ' + c.rollbackPlan;
+    } else {
+      $('approvalPanel').style.display = 'none';
+    }
+    if (c.postIncidentReport) {
+      $('reportPanel').classList.remove('hide');
+      $('reportBox').textContent = c.postIncidentReport;
+    }
+  }
+
+  function showMetrics(summary) {
+    $('metricsPanel').classList.remove('hide');
+    const m = [
+      ['Durée pipeline', (summary.durationMs / 1000).toFixed(1) + 's'],
+      ['Appels outils', summary.toolCalls],
+      ['Actions exécutées', summary.actionsExecuted],
+      ['Appels Qwen', summary.usage.calls],
+      ['Tokens prompt', summary.usage.promptTokens],
+      ['Tokens complétion', summary.usage.completionTokens],
+    ];
+    $('metricsBox').innerHTML = m.map(([k, v]) =>
+      '<div class="metric"><div class="v">' + v + '</div><div class="k">' + k + '</div></div>').join('');
+  }
+
+  function openStream(incidentId) {
+    if (eventSource) eventSource.close();
+    eventSource = new EventSource('/incident/' + incidentId + '/events');
+    eventSource.onmessage = (msg) => {
+      const { type, data } = JSON.parse(msg.data);
+      if (type === 'timeline') addTimelineEntry(data);
+      if (type === 'status') { setStatus(data); refreshDetail(); }
+      if (type === 'done') { refreshDetail(); showMetrics(data); }
+      if (type === 'error') { setStatus('failed'); alert('Erreur pipeline : ' + data); }
+    };
+  }
+
+  $('runBtn').addEventListener('click', async () => {
+    const text = $('alertInput').value.trim();
+    if (!text) return alert("Décrivez l'incident (texte libre accepté).");
+    $('runBtn').disabled = true;
+    $('timelineBox').innerHTML = '';
+    ['timelinePanel','diagPanel','reportPanel','metricsPanel'].forEach(id => $(id).classList.add('hide'));
+    document.querySelectorAll('.step').forEach(s => s.classList.remove('done', 'active'));
+    $('approvalPanel').style.display = 'none';
+    setStatus('running');
+    try {
+      const res = await fetch('/incident', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawText: text, source: 'dashboard' }),
+      });
+      const data = await res.json();
+      currentIncidentId = data.incidentId;
+      openStream(currentIncidentId);
+    } catch (err) {
+      alert('Échec de la requête : ' + err.message);
+      setStatus('failed');
+    } finally {
+      $('runBtn').disabled = false;
+    }
+  });
+
+  async function decide(path) {
+    const approver = $('approverName').value.trim() || 'DSI';
+    const reason = path === 'reject' ? (prompt('Motif du refus ?') || 'non précisé') : undefined;
+    $('approveBtn').disabled = $('rejectBtn').disabled = true;
+    try {
+      await fetch('/incident/' + currentIncidentId + '/' + path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approver, reason }),
+      });
+    } finally {
+      $('approveBtn').disabled = $('rejectBtn').disabled = false;
+    }
+  }
+  $('approveBtn').addEventListener('click', () => decide('approve'));
+  $('rejectBtn').addEventListener('click', () => decide('reject'));
+</script>
+</body>
+</html>

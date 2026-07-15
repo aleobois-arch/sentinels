@@ -1,0 +1,40 @@
+# Serverless Devs deployment config for Alibaba Cloud Function Compute 3.0
+# Docs: https://docs.serverless-devs.com/  |  deploy with: s deploy
+edition: 3.0.0
+name: sentinelops-society
+access: default
+
+resources:
+  sentinelops:
+    component: fc3
+    props:
+      region: eu-central-1
+      functionName: sentinelops-society
+      description: SentinelOps Society — autonomous incident-response autopilot (Qwen Cloud, Track 4)
+      runtime: custom.debian10
+      cpu: 1
+      memorySize: 1024
+      diskSize: 512
+      # ~90-100s per Qwen agent step; the 5-agent pipeline + tool loop fits in 10 min.
+      timeout: 600
+      customRuntimeConfig:
+        command:
+          - node
+          - dist/server.js
+        port: 9000
+      environmentVariables:
+        NODE_ENV: production
+        QWEN_MODEL: qwen-plus
+        # Set the real key in the FC console (Configurations → Environment Variables)
+        # or export QWEN_API_KEY before running `s deploy`.
+        QWEN_API_KEY: ${env(QWEN_API_KEY)}
+        QWEN_BASE_URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+      code: ./
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
